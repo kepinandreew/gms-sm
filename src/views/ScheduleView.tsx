@@ -593,9 +593,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   setConfirmClearOpen(false);
-                  if (onClearSchedule) onClearSchedule();
+                  if (onClearSchedule) await onClearSchedule();
                 }}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-600/20 transition cursor-pointer"
               >

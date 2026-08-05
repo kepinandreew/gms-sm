@@ -218,22 +218,125 @@ export async function deleteFromSupabase(tableName: string, column: string, valu
   }
 }
 
-export async function deleteMonthAssignmentsInSupabase(scheduleId: string, monthPrefix: string): Promise<SupabaseOpResult> {
-  if (!supabase) return { success: false, error: 'Supabase client belum terkonfigurasi.' };
-  try {
-    const res1 = await supabase.from('assignments').delete().or(`schedule_id.eq.${scheduleId},weekend_id.gte.${monthPrefix}-01`).select();
-    logCrudOperation({ table: 'assignments', action: 'DELETE', rows: res1.data ? res1.data.length : 0, success: !res1.error, error: res1.error?.message });
+export async function deleteMonthAssignmentsInSupabase(
+  scheduleId: string,
+  monthPrefix: string,
+  targetMonth?: number,
+  targetYear?: number
+): Promise<SupabaseOpResult> {
+  if (!supabase) return { success: true };
 
-    const res2 = await supabase.from('schedules').delete().eq('id', scheduleId).select();
-    logCrudOperation({ table: 'schedules', action: 'DELETE', rows: res2.data ? res2.data.length : 0, success: !res2.error, error: res2.error?.message });
-
-    if (res1.error || res2.error) {
-      return { success: false, error: res1.error?.message || res2.error?.message };
+  let month = targetMonth;
+  let year = targetYear;
+  if (!month || !year) {
+    const parts = monthPrefix.split('-');
+    if (parts.length >= 2) {
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10);
     }
+  }
+
+  try {
+    // 1. Delete assignments SEQUENTIALLY
+    let assignmentFilter = `schedule_id.eq.${scheduleId},weekend_id.gte.${monthPrefix}-01`;
+    if (month && year) {
+      assignmentFilter += `,schedule_id.eq.sched-${year}-${month},weekend_id.like.${monthPrefix}%,service_date.like.${monthPrefix}%`;
+    }
+
+    const res1 = await supabase.from('assignments').delete().or(assignmentFilter).select();
+    logCrudOperation({
+      table: 'assignments',
+      action: 'DELETE',
+      rows: res1.data ? res1.data.length : 0,
+      success: !res1.error,
+      error: res1.error?.message,
+    });
+
+    if (res1.error) {
+      console.error('[Supabase Delete Assignments Error]:', res1.error);
+      return { success: false, error: `Gagal menghapus penugasan dari Supabase: ${res1.error.message}` };
+    }
+
+    // 2. Delete special services / special service assignments SEQUENTIALLY
+    if (month && year) {
+      const resSpec = await supabase
+        .from('special_services')
+        .delete()
+        .eq('month', month)
+        .eq('year', year)
+        .select();
+
+      logCrudOperation({
+        table: 'special_services',
+        action: 'DELETE',
+        rows: resSpec.data ? resSpec.data.length : 0,
+        success: !resSpec.error,
+        error: resSpec.error?.message,
+      });
+
+      if (resSpec.error) {
+        console.warn('[Supabase Delete Special Services Notice]:', resSpec.error.message);
+      }
+    }
+
+    // 3. Delete schedule row SEQUENTIALLY
+    let scheduleFilter = `id.eq.${scheduleId}`;
+    if (month && year) {
+      scheduleFilter += `,and(month.eq.${month},year.eq.${year})`;
+    }
+
+    const res2 = await supabase.from('schedules').delete().or(scheduleFilter).select();
+    logCrudOperation({
+      table: 'schedules',
+      action: 'DELETE',
+      rows: res2.data ? res2.data.length : 0,
+      success: !res2.error,
+      error: res2.error?.message,
+    });
+
+    if (res2.error) {
+      console.error('[Supabase Delete Schedule Error]:', res2.error);
+      return { success: false, error: `Gagal menghapus jadwal dari Supabase: ${res2.error.message}` };
+    }
+
+    // 4. VERIFY DELETION in Supabase using SELECT query
+    if (month && year) {
+      const { data: checkData, error: checkErr } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('month', month)
+        .eq('year', year);
+
+      if (checkErr) {
+        console.error('[Supabase Schedule Verification Error]:', checkErr);
+        return { success: false, error: `Gagal verifikasi status jadwal di Supabase: ${checkErr.message}` };
+      }
+
+      if (checkData && checkData.length > 0) {
+        console.warn(`[Supabase Verification Notice]: Found ${checkData.length} schedule record(s) remaining for ${month}/${year}. Forcing deletion by ID...`);
+        const remainingIds = checkData.map((s) => s.id);
+        const { error: retryErr } = await supabase.from('schedules').delete().in('id', remainingIds);
+
+        if (retryErr) {
+          return { success: false, error: `Jadwal masih tersisa di Supabase dan gagal dihapus: ${retryErr.message}` };
+        }
+
+        const { data: recheckData } = await supabase
+          .from('schedules')
+          .select('id')
+          .eq('month', month)
+          .eq('year', year);
+
+        if (recheckData && recheckData.length > 0) {
+          return { success: false, error: `Jadwal (${month}/${year}) gagal dihapus dari Supabase (masih ada ${recheckData.length} data).` };
+        }
+      }
+    }
+
     return { success: true };
   } catch (e: any) {
     console.error('[Supabase Delete Month Exception]:', e);
-    return { success: false, error: e.message };
+    return { success: false, error: e.message || 'Koneksi database gagal.' };
   }
 }
 

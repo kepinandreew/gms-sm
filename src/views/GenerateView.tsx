@@ -65,7 +65,7 @@ export const GenerateView: React.FC<GenerateViewProps> = ({
   const isPrevFinalized = prevSchedule?.status === 'finalized';
   const isTargetFinalized = existingSchedule?.status === 'finalized';
 
-  const handleRunGenerator = () => {
+  const handleRunGenerator = async () => {
     if (isTargetFinalized) {
       setGenerationLogs([`❌ Error: Jadwal ${monthName} ${selectedYear} sudah difinalisasi (Read-Only).`]);
       return;
@@ -80,33 +80,72 @@ export const GenerateView: React.FC<GenerateViewProps> = ({
 
     setIsGenerating(true);
     setConflictReport(null);
-    setGenerationLogs(['Mempersiapkan parameter & constraint data...']);
+    setGenerationLogs(['Mempersiapkan parameter & pembersihan jadwal...']);
 
-    setTimeout(() => {
-      try {
-        const result = generateMonthlySchedule({
-          month: selectedMonth,
-          year: selectedYear,
-          teams,
-          availabilities,
-          pastAssignments,
-          settings,
-          existingSchedule,
-        });
+    try {
+      // 1. CLEAR existing schedule for this month/year first sequentially & verify Supabase is empty
+      setGenerationLogs((prev) => [
+        ...prev,
+        `Menghapus jadwal lama (${monthName} ${selectedYear}) dari Supabase & memori...`,
+      ]);
 
-        setGenerationLogs(result.logs);
-        setLastGeneratedSchedule(result.schedule);
-        if (result.hasConflict && result.conflictReport) {
-          setConflictReport(result.conflictReport);
-        }
-        onSaveScheduleResult(result.schedule, result.assignments);
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setGenerationLogs((prev) => [...prev, `❌ Error: ${errorMessage}`]);
-      } finally {
+      const clearRes = await store.clearScheduleForMonth(selectedMonth, selectedYear);
+      if (!clearRes.success) {
+        setGenerationLogs((prev) => [
+          ...prev,
+          `❌ Gagal membersihkan jadwal lama dari Supabase: ${clearRes.error}`,
+          `Proses pembuatan jadwal dibatalkan untuk mencegah duplikasi data.`,
+        ]);
         setIsGenerating(false);
+        return;
       }
-    }, 600);
+
+      setGenerationLogs((prev) => [
+        ...prev,
+        `✓ Database Supabase terverifikasi bersih (jadwal & penugasan lama dihapus).`,
+        `Memulai kalkulasi optimasi jadwal otomatis...`,
+      ]);
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // 2. GENERATE new monthly schedule
+      const result = generateMonthlySchedule({
+        month: selectedMonth,
+        year: selectedYear,
+        teams,
+        availabilities,
+        pastAssignments,
+        settings,
+        existingSchedule: undefined,
+      });
+
+      setGenerationLogs((prev) => [...prev, ...result.logs]);
+      setLastGeneratedSchedule(result.schedule);
+      if (result.hasConflict && result.conflictReport) {
+        setConflictReport(result.conflictReport);
+      }
+
+      // 3. SAVE new schedule & assignments sequentially to Supabase
+      setGenerationLogs((prev) => [...prev, `Menyimpan jadwal & penugasan baru ke Supabase...`]);
+
+      const saveRes = await store.saveScheduleAndAssignments(result.schedule, result.assignments);
+      if (!saveRes.success) {
+        setGenerationLogs((prev) => [
+          ...prev,
+          `❌ Gagal menyimpan jadwal baru ke Supabase: ${saveRes.error}`,
+        ]);
+        setIsGenerating(false);
+        return;
+      }
+
+      setGenerationLogs((prev) => [...prev, `✓ Jadwal & Penugasan baru berhasil disimpan ke Supabase!`]);
+      onSaveScheduleResult(result.schedule, result.assignments);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setGenerationLogs((prev) => [...prev, `❌ Error: ${errorMessage}`]);
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (

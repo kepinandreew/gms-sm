@@ -39,6 +39,7 @@ import {
   deleteSDMonthAssignmentsInSupabase,
   deleteImportBatchFromSupabase,
   isSupabaseConfigured,
+  SupabaseOpResult,
 } from '../services/supabase';
 import { getMonthName } from '../engine/dateUtils';
 
@@ -938,8 +939,21 @@ class DataStore {
     );
   }
 
-  public saveSchedule(schedule: Schedule): void {
-    const idx = this.schedules.findIndex((s) => s.id === schedule.id);
+  public async saveSchedule(schedule: Schedule): Promise<SupabaseOpResult> {
+    const existingByMonthYear = this.getScheduleByMonthYear(schedule.month, schedule.year);
+    if (existingByMonthYear && existingByMonthYear.id !== schedule.id) {
+      schedule = {
+        ...schedule,
+        id: existingByMonthYear.id,
+        created_at: existingByMonthYear.created_at || schedule.created_at,
+      };
+    }
+
+    const idx = this.schedules.findIndex(
+      (s) =>
+        s.id === schedule.id ||
+        (Number(s.month) === Number(schedule.month) && Number(s.year) === Number(schedule.year))
+    );
     if (idx !== -1) {
       this.schedules[idx] = schedule;
     } else {
@@ -948,12 +962,62 @@ class DataStore {
     localStorage.setItem(STORAGE_KEYS.SCHEDULES, JSON.stringify(this.schedules));
     this.notify();
 
-    pushTableToSupabase('schedules', [schedule]).then((res) => {
-      if (!res.success) this.notifyError(`Gagal menyimpan Jadwal ke Supabase: ${res.error}`);
-    });
+    const res = await pushTableToSupabase('schedules', [schedule]);
+    if (!res.success) this.notifyError(`Gagal menyimpan Jadwal ke Supabase: ${res.error}`);
+    return res;
   }
 
-  public deleteSchedule(id: string): void {
+  public async saveScheduleAndAssignments(
+    schedule: Schedule,
+    newAssignments: Assignment[]
+  ): Promise<SupabaseOpResult> {
+    const existing = this.getScheduleByMonthYear(schedule.month, schedule.year);
+    if (existing && existing.id !== schedule.id) {
+      const oldId = schedule.id;
+      schedule = {
+        ...schedule,
+        id: existing.id,
+        created_at: existing.created_at || schedule.created_at,
+      };
+      newAssignments = newAssignments.map((a) =>
+        a.schedule_id === oldId ? { ...a, schedule_id: existing.id } : a
+      );
+    }
+
+    const idx = this.schedules.findIndex(
+      (s) =>
+        s.id === schedule.id ||
+        (Number(s.month) === Number(schedule.month) && Number(s.year) === Number(schedule.year))
+    );
+    if (idx !== -1) {
+      this.schedules[idx] = schedule;
+    } else {
+      this.schedules.push(schedule);
+    }
+    localStorage.setItem(STORAGE_KEYS.SCHEDULES, JSON.stringify(this.schedules));
+
+    this.assignments = this.assignments.filter((a) => a.schedule_id !== schedule.id);
+    this.assignments.push(...newAssignments);
+    localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(this.assignments));
+
+    this.notify();
+
+    const schedRes = await pushTableToSupabase('schedules', [schedule]);
+    if (!schedRes.success) {
+      this.notifyError(`Gagal menyimpan Jadwal ke Supabase: ${schedRes.error}`);
+      return schedRes;
+    }
+
+    const asgnRes = await pushTableToSupabase('assignments', newAssignments);
+    if (!asgnRes.success) {
+      this.notifyError(`Gagal menyimpan Penugasan ke Supabase: ${asgnRes.error}`);
+      return asgnRes;
+    }
+
+    return { success: true };
+  }
+
+  public async deleteSchedule(id: string): Promise<SupabaseOpResult> {
     this.schedules = this.schedules.filter((s) => s.id !== id);
     localStorage.setItem(STORAGE_KEYS.SCHEDULES, JSON.stringify(this.schedules));
 
@@ -962,20 +1026,31 @@ class DataStore {
 
     this.notify();
 
-    deleteFromSupabase('schedules', 'id', id).then((res) => {
-      if (!res.success) this.notifyError(`Gagal menghapus Jadwal dari Supabase: ${res.error}`);
-    });
-    deleteFromSupabase('assignments', 'schedule_id', id).then((res) => {
-      if (!res.success) this.notifyError(`Gagal menghapus Penugasan dari Supabase: ${res.error}`);
-    });
+    const res1 = await deleteFromSupabase('schedules', 'id', id);
+    if (!res1.success) this.notifyError(`Gagal menghapus Jadwal dari Supabase: ${res1.error}`);
+
+    const res2 = await deleteFromSupabase('assignments', 'schedule_id', id);
+    if (!res2.success) this.notifyError(`Gagal menghapus Penugasan dari Supabase: ${res2.error}`);
+
+    return res1.success && res2.success
+      ? { success: true }
+      : { success: false, error: res1.error || res2.error };
   }
 
-  public clearScheduleForMonth(month: number, year: number): void {
+  public async clearScheduleForMonth(month: number, year: number): Promise<SupabaseOpResult> {
     const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
     const sched = this.getScheduleByMonthYear(month, year);
     const schedId = sched ? sched.id : `sched-${year}-${month}`;
 
-    this.schedules = this.schedules.filter((s) => s.id !== schedId && !(Number(s.month) === Number(month) && Number(s.year) === Number(year)));
+    const res = await deleteMonthAssignmentsInSupabase(schedId, monthPrefix, month, year);
+    if (!res.success) {
+      this.notifyError(`Gagal menghapus Jadwal Bulan ini dari Supabase: ${res.error}`);
+      return res;
+    }
+
+    this.schedules = this.schedules.filter(
+      (s) => s.id !== schedId && !(Number(s.month) === Number(month) && Number(s.year) === Number(year))
+    );
     localStorage.setItem(STORAGE_KEYS.SCHEDULES, JSON.stringify(this.schedules));
 
     this.assignments = this.assignments.filter((a) => {
@@ -987,10 +1062,7 @@ class DataStore {
     localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(this.assignments));
 
     this.notify();
-
-    deleteMonthAssignmentsInSupabase(schedId, monthPrefix).then((res) => {
-      if (!res.success) this.notifyError(`Gagal menghapus Jadwal Bulan ini dari Supabase: ${res.error}`);
-    });
+    return { success: true };
   }
 
   // --- ASSIGNMENTS CRUD ---

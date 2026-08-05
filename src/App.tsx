@@ -147,34 +147,33 @@ export default function App() {
     setSelectedYear(year);
   };
 
-  const handleSaveScheduleResult = (schedule: Schedule, newAssignments: Assignment[]) => {
-    store.saveSchedule(schedule);
-    store.saveAssignmentsForSchedule(schedule.id, newAssignments);
+  const handleSaveScheduleResult = async (schedule: Schedule, newAssignments: Assignment[]) => {
+    await store.saveScheduleAndAssignments(schedule, newAssignments);
   };
 
   const handleUpdateAssignment = (assignmentId: string, updates: Partial<Assignment>) => {
     store.updateAssignment(assignmentId, updates);
   };
 
-  const handleFinalizeSchedule = () => {
+  const handleFinalizeSchedule = async () => {
     if (!currentSchedule) return;
-    store.saveSchedule({
+    await store.saveSchedule({
       ...currentSchedule,
       status: 'finalized',
       finalized_at: new Date().toISOString(),
     });
   };
 
-  const handleReopenSchedule = () => {
+  const handleReopenSchedule = async () => {
     if (!currentSchedule) return;
-    store.saveSchedule({
+    await store.saveSchedule({
       ...currentSchedule,
       status: 'generated',
     });
   };
 
-  const handleClearSchedule = () => {
-    store.clearScheduleForMonth(selectedMonth, selectedYear);
+  const handleClearSchedule = async () => {
+    await store.clearScheduleForMonth(selectedMonth, selectedYear);
   };
 
   const handleAddTeam = (name: string, notes?: string) => {
