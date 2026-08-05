@@ -1,0 +1,6 @@
+{
+  "name": "GMS Service Team Scheduler",
+  "description": "Sistem Penjadwalan Otomatis Tim Pelayanan Gereja GMS dengan Algoritma Fairness, Rotasi Lokasi & Slot Ibadah",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
