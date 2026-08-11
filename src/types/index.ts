@@ -309,6 +309,7 @@ export interface ServiceDirector {
   email?: string;
   notes?: string;
   created_at: string;
+  updated_at?: string;
   special_rules?: SDRule;
 
   // Extensible Future Architecture Fields

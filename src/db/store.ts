@@ -323,7 +323,13 @@ class DataStore {
     await pushTableToSupabase('teams', DEFAULT_TEAMS);
     await pushTableToSupabase('members', seedMembers);
     await pushTableToSupabase('settings', [DEFAULT_SETTINGS]);
-    await pushTableToSupabase('sd_directors', DEFAULT_SERVICE_DIRECTORS);
+    const nowISO = new Date().toISOString();
+    const sanitizedSeedSDs = DEFAULT_SERVICE_DIRECTORS.map((sd) => ({
+      ...sd,
+      created_at: sd.created_at || nowISO,
+      updated_at: sd.updated_at || nowISO,
+    }));
+    await pushTableToSupabase('sd_directors', sanitizedSeedSDs);
     await pushTableToSupabase('sd_schedules', [DEFAULT_SD_SCHEDULE_AUG_2026]);
     await pushTableToSupabase('sd_assignments', DEFAULT_SD_ASSIGNMENTS_AUG_2026);
     await pushTableToSupabase('special_services', DEFAULT_SPECIAL_SERVICES);
@@ -1329,20 +1335,29 @@ class DataStore {
   }
 
   public saveServiceDirectors(directors: ServiceDirector[]): void {
-    localStorage.setItem(STORAGE_KEYS.SD_DIRECTORS, JSON.stringify(directors));
+    const nowISO = new Date().toISOString();
+    const sanitized = directors.map((sd) => ({
+      ...sd,
+      created_at: sd.created_at || nowISO,
+      updated_at: sd.updated_at || nowISO,
+    }));
+
+    localStorage.setItem(STORAGE_KEYS.SD_DIRECTORS, JSON.stringify(sanitized));
     this.notify();
 
-    pushTableToSupabase('sd_directors', directors).then((res) => {
+    pushTableToSupabase('sd_directors', sanitized).then((res) => {
       if (!res.success) this.notifyError(`Gagal menyimpan Service Director ke Supabase: ${res.error}`);
     });
   }
 
-  public addServiceDirector(sdData: Omit<ServiceDirector, 'id' | 'created_at'>): ServiceDirector {
+  public addServiceDirector(sdData: Omit<ServiceDirector, 'id' | 'created_at' | 'updated_at'>): ServiceDirector {
     const list = this.getServiceDirectors();
+    const nowISO = new Date().toISOString();
     const newSD: ServiceDirector = {
       ...sdData,
       id: `sd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      created_at: new Date().toISOString(),
+      created_at: nowISO,
+      updated_at: nowISO,
       requests: sdData.requests || [],
     };
     list.push(newSD);
@@ -1354,7 +1369,11 @@ class DataStore {
     const list = this.getServiceDirectors();
     const idx = list.findIndex((sd) => sd.id === id);
     if (idx !== -1) {
-      list[idx] = { ...list[idx], ...updates };
+      list[idx] = {
+        ...list[idx],
+        ...updates,
+        updated_at: new Date().toISOString(),
+      };
       this.saveServiceDirectors(list);
     }
   }
