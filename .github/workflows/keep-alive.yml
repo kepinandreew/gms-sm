@@ -1,0 +1,32 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # Berjalan setiap 3 hari sekali pada jam 00:00 UTC (07:00 WIB)
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # Memungkinkan tombol "Run workflow" manual di GitHub Actions UI
+
+jobs:
+  ping-supabase:
+    name: Ping Supabase Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send keep-alive query to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://offbywvstsbidxxbtozl.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mZmJ5d3ZzdHNiaWR4eGJ0b3psIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTM5OTUsImV4cCI6MjEwMTQ2OTk5NX0.fZ9RjI-9-WmaPV1E71DFGwTKTY0a6_gNxrYGBrKNZo4' }}
+        run: |
+          echo "Pinging Supabase REST API..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/teams?select=id&limit=1")
+
+          echo "Response HTTP Status: $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Ping berhasil! Database Supabase tetap aktif."
+          else
+            echo "❌ Ping gagal dengan status code $HTTP_STATUS"
+            exit 1
+          fi
