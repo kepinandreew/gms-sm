@@ -237,27 +237,85 @@ export async function deleteMonthAssignmentsInSupabase(
   }
 
   try {
-    // 1. Delete assignments SEQUENTIALLY
-    let assignmentFilter = `schedule_id.eq.${scheduleId},weekend_id.gte.${monthPrefix}-01`;
+    // 1. Collect all matching schedule IDs for this month and year from Supabase
+    const scheduleIdsToDelete = new Set<string>();
+    if (scheduleId) scheduleIdsToDelete.add(scheduleId);
     if (month && year) {
-      assignmentFilter += `,schedule_id.eq.sched-${year}-${month},weekend_id.like.${monthPrefix}%,service_date.like.${monthPrefix}%`;
+      scheduleIdsToDelete.add(`sched-${year}-${month}`);
+      scheduleIdsToDelete.add(`sched-${year}-${String(month).padStart(2, '0')}`);
+      const { data: foundScheds } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('month', month)
+        .eq('year', year);
+      if (foundScheds) {
+        foundScheds.forEach((s) => scheduleIdsToDelete.add(s.id));
+      }
     }
 
-    const res1 = await supabase.from('assignments').delete().or(assignmentFilter).select();
-    logCrudOperation({
-      table: 'assignments',
-      action: 'DELETE',
-      rows: res1.data ? res1.data.length : 0,
-      success: !res1.error,
-      error: res1.error?.message,
-    });
+    const schedIdList = Array.from(scheduleIdsToDelete);
 
-    if (res1.error) {
-      console.error('[Supabase Delete Assignments Error]:', res1.error);
-      return { success: false, error: `Gagal menghapus penugasan dari Supabase: ${res1.error.message}` };
+    // 2. Delete assignments by schedule_id
+    if (schedIdList.length > 0) {
+      const res1 = await supabase.from('assignments').delete().in('schedule_id', schedIdList).select();
+      logCrudOperation({
+        table: 'assignments',
+        action: 'DELETE',
+        rows: res1.data ? res1.data.length : 0,
+        success: !res1.error,
+        error: res1.error?.message,
+      });
+
+      if (res1.error) {
+        console.error('[Supabase Delete Assignments Error]:', res1.error);
+        return { success: false, error: `Gagal menghapus penugasan dari Supabase: ${res1.error.message}` };
+      }
     }
 
-    // 2. Delete special services / special service assignments SEQUENTIALLY
+    // 3. Delete any remaining assignments for the month using DATE range and weekend_id
+    // (service_date is DATE in Postgres; using LIKE causes 'operator does not exist: date ~~ unknown')
+    if (month && year) {
+      const mm = String(month).padStart(2, '0');
+      const lastDay = new Date(year, month, 0).getDate();
+      const startDate = `${year}-${mm}-01`;
+      const endDate = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`;
+
+      const resDate = await supabase
+        .from('assignments')
+        .delete()
+        .gte('service_date', startDate)
+        .lte('service_date', endDate)
+        .select();
+
+      logCrudOperation({
+        table: 'assignments',
+        action: 'DELETE',
+        rows: resDate.data ? resDate.data.length : 0,
+        success: !resDate.error,
+        error: resDate.error?.message,
+      });
+
+      if (resDate.error) {
+        console.warn('[Supabase Delete Assignments by Date Notice]:', resDate.error.message);
+      }
+
+      // Cleanup by weekend_id prefix (weekend_id is text)
+      const resWk = await supabase
+        .from('assignments')
+        .delete()
+        .or(`weekend_id.like.${monthPrefix}%,weekend_id.like.wk-${monthPrefix}%`)
+        .select();
+
+      logCrudOperation({
+        table: 'assignments',
+        action: 'DELETE',
+        rows: resWk.data ? resWk.data.length : 0,
+        success: !resWk.error,
+        error: resWk.error?.message,
+      });
+    }
+
+    // 4. Delete special services / special service assignments SEQUENTIALLY
     if (month && year) {
       const resSpec = await supabase
         .from('special_services')
@@ -279,27 +337,32 @@ export async function deleteMonthAssignmentsInSupabase(
       }
     }
 
-    // 3. Delete schedule row SEQUENTIALLY
-    let scheduleFilter = `id.eq.${scheduleId}`;
+    // 5. Delete schedule row SEQUENTIALLY
+    const schedFilterParts: string[] = [];
+    if (schedIdList.length > 0) {
+      schedFilterParts.push(...schedIdList.map((id) => `id.eq.${id}`));
+    }
     if (month && year) {
-      scheduleFilter += `,and(month.eq.${month},year.eq.${year})`;
+      schedFilterParts.push(`and(month.eq.${month},year.eq.${year})`);
     }
 
-    const res2 = await supabase.from('schedules').delete().or(scheduleFilter).select();
-    logCrudOperation({
-      table: 'schedules',
-      action: 'DELETE',
-      rows: res2.data ? res2.data.length : 0,
-      success: !res2.error,
-      error: res2.error?.message,
-    });
+    if (schedFilterParts.length > 0) {
+      const res2 = await supabase.from('schedules').delete().or(schedFilterParts.join(',')).select();
+      logCrudOperation({
+        table: 'schedules',
+        action: 'DELETE',
+        rows: res2.data ? res2.data.length : 0,
+        success: !res2.error,
+        error: res2.error?.message,
+      });
 
-    if (res2.error) {
-      console.error('[Supabase Delete Schedule Error]:', res2.error);
-      return { success: false, error: `Gagal menghapus jadwal dari Supabase: ${res2.error.message}` };
+      if (res2.error) {
+        console.error('[Supabase Delete Schedule Error]:', res2.error);
+        return { success: false, error: `Gagal menghapus jadwal dari Supabase: ${res2.error.message}` };
+      }
     }
 
-    // 4. VERIFY DELETION in Supabase using SELECT query
+    // 6. VERIFY DELETION in Supabase using SELECT query
     if (month && year) {
       const { data: checkData, error: checkErr } = await supabase
         .from('schedules')
@@ -343,7 +406,7 @@ export async function deleteMonthAssignmentsInSupabase(
 export async function deleteSDMonthAssignmentsInSupabase(sdScheduleId: string, monthPrefix: string): Promise<SupabaseOpResult> {
   if (!supabase) return { success: false, error: 'Supabase client belum terkonfigurasi.' };
   try {
-    const res1 = await supabase.from('sd_assignments').delete().or(`sd_schedule_id.eq.${sdScheduleId},weekend_id.gte.${monthPrefix}-01`).select();
+    const res1 = await supabase.from('sd_assignments').delete().or(`sd_schedule_id.eq.${sdScheduleId},weekend_id.like.${monthPrefix}%`).select();
     logCrudOperation({ table: 'sd_assignments', action: 'DELETE', rows: res1.data ? res1.data.length : 0, success: !res1.error, error: res1.error?.message });
 
     const res2 = await supabase.from('sd_schedules').delete().eq('id', sdScheduleId).select();
