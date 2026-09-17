@@ -37,7 +37,8 @@ export function formatNiceDate(dateStr: string): string {
 
 /**
  * Gets all Service Weekends in a given month and year.
- * A Service Weekend is defined as Saturday + Sunday where Saturday is in the given month.
+ * A Service Weekend is anchored on Sunday (the primary church service day) within the month.
+ * If Sunday is the 1st of the month (e.g. 1 November 2026), its weekend includes the Saturday prior (31 October).
  */
 export function getServiceWeekendsInMonth(month: number, year: number): ServiceWeekend[] {
   const weekends: ServiceWeekend[] = [];
@@ -46,10 +47,10 @@ export function getServiceWeekendsInMonth(month: number, year: number): ServiceW
   let weekendNumber = 1;
   for (let day = 1; day <= daysInMonth; day++) {
     const d = new Date(year, month - 1, day);
-    if (d.getDay() === 6) { // 6 = Saturday
-      const saturday = new Date(d);
+    if (d.getDay() === 0) { // 0 = Sunday (primary church service anchor)
       const sunday = new Date(d);
-      sunday.setDate(saturday.getDate() + 1);
+      const saturday = new Date(d);
+      saturday.setDate(sunday.getDate() - 1);
 
       const satStr = formatDateStr(saturday);
       const sunStr = formatDateStr(sunday);
@@ -59,8 +60,10 @@ export function getServiceWeekendsInMonth(month: number, year: number): ServiceW
       const satMonth = INDONESIAN_MONTHS[saturday.getMonth()].substring(0, 3);
       const sunMonth = INDONESIAN_MONTHS[sunday.getMonth()].substring(0, 3);
 
-      let label = `${satMonth} ${satDay}-${sunDay}, ${year}`;
-      if (satMonth !== sunMonth) {
+      let label = `${sunMonth} ${sunDay}, ${year}`;
+      if (satMonth === sunMonth) {
+        label = `${satMonth} ${satDay}-${sunDay}, ${year}`;
+      } else {
         label = `${satMonth} ${satDay} - ${sunMonth} ${sunDay}, ${year}`;
       }
 

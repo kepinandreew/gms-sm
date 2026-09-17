@@ -334,11 +334,19 @@ export const ImportPdfView: React.FC<ImportPdfViewProps> = ({ onNavigate, onMont
       if (summary.assignments && summary.assignments.length > 0) {
         // Check if month/year already imported
         const duplicateLog = existingAuditLogs.find((log) => log.month === summary.month && log.year === summary.year);
+        const existingAssignmentsForMonth = existingAssignments.filter(
+          (a) => a.service_date && a.service_date.startsWith(`${summary.year}-${String(summary.month).padStart(2, '0')}`)
+        );
 
-        if (duplicateLog) {
+        // If an audit log exists BUT there are no assignments in the DB (stale/incomplete log), automatically clean it up
+        if (duplicateLog && existingAssignmentsForMonth.length > 0) {
           setIsParsing(false);
           setDuplicateConflict({ summary, existingLog: duplicateLog });
-          return; // Prompt admin via modal
+          return; // Prompt admin via modal only if actual assignments exist
+        }
+
+        if (duplicateLog) {
+          await store.deleteImportBatch(duplicateLog.batch_id, duplicateLog.month, duplicateLog.year);
         }
 
         await saveSummaryToStore(summary);
@@ -371,11 +379,20 @@ export const ImportPdfView: React.FC<ImportPdfViewProps> = ({ onNavigate, onMont
     if (!duplicateConflict) return;
     const { summary, existingLog } = duplicateConflict;
 
-    store.deleteImportBatch(existingLog.batch_id, existingLog.month, existingLog.year);
+    await store.deleteImportBatch(existingLog.batch_id, existingLog.month, existingLog.year);
 
     summary.status = 'confirmed';
     summary.imported_at = new Date().toISOString();
     await saveSummaryToStore(summary);
+
+    setImportSummaries((prev) => {
+      const filtered = prev.filter((s) => !(s.month === summary.month && s.year === summary.year));
+      return [...filtered, summary];
+    });
+
+    if (onMonthYearSelect) {
+      onMonthYearSelect(summary.month, summary.year);
+    }
 
     setDuplicateConflict(null);
     refreshAuditLogs();
@@ -389,6 +406,15 @@ export const ImportPdfView: React.FC<ImportPdfViewProps> = ({ onNavigate, onMont
     summary.status = 'confirmed';
     summary.imported_at = new Date().toISOString();
     await saveSummaryToStore(summary);
+
+    setImportSummaries((prev) => {
+      const filtered = prev.filter((s) => !(s.month === summary.month && s.year === summary.year));
+      return [...filtered, summary];
+    });
+
+    if (onMonthYearSelect) {
+      onMonthYearSelect(summary.month, summary.year);
+    }
 
     setDuplicateConflict(null);
     refreshAuditLogs();
@@ -582,11 +608,11 @@ export const ImportPdfView: React.FC<ImportPdfViewProps> = ({ onNavigate, onMont
   };
 
   // --- INDIVIDUAL MONTH CONFIRMATION ---
-  const handleConfirmImport = (summaryIndex: number) => {
+  const handleConfirmImport = async (summaryIndex: number) => {
     const summary = importSummaries[summaryIndex];
     if (!summary) return;
 
-    saveSummaryToStore(summary);
+    await saveSummaryToStore(summary);
 
     // Mark summary as confirmed
     const updatedSummaries = [...importSummaries];
@@ -608,10 +634,10 @@ export const ImportPdfView: React.FC<ImportPdfViewProps> = ({ onNavigate, onMont
   };
 
   // --- DELETE IMPORT BATCH / ROLLBACK ---
-  const handleConfirmDeleteBatch = () => {
+  const handleConfirmDeleteBatch = async () => {
     if (!deletingBatch) return;
 
-    store.deleteImportBatch(deletingBatch.batch_id, deletingBatch.month, deletingBatch.year);
+    await store.deleteImportBatch(deletingBatch.batch_id, deletingBatch.month, deletingBatch.year);
     refreshAuditLogs();
 
     // Also remove from local summaries list if present

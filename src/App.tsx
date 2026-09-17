@@ -137,9 +137,7 @@ export default function App() {
 
   // Derived current month schedule & assignments
   const currentSchedule = store.getScheduleByMonthYear(selectedMonth, selectedYear);
-  const currentMonthAssignments = currentSchedule
-    ? store.getAssignmentsForSchedule(currentSchedule.id)
-    : [];
+  const currentMonthAssignments = store.getAssignmentsForMonth(selectedMonth, selectedYear);
 
   // Handlers
   const handleMonthYearChange = (month: number, year: number) => {

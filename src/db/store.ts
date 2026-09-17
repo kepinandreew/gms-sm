@@ -41,7 +41,7 @@ import {
   isSupabaseConfigured,
   SupabaseOpResult,
 } from '../services/supabase';
-import { getMonthName } from '../engine/dateUtils';
+import { getMonthName, getServiceWeekendsInMonth } from '../engine/dateUtils';
 
 const STORAGE_KEYS = {
   TEAMS: 'gms_scheduler_teams_v3',
@@ -638,7 +638,7 @@ class DataStore {
    * - Special services created for month/year
    * - Audit log entry for batch
    */
-  public deleteImportBatch(batchId: string, month: number, year: number): void {
+  public async deleteImportBatch(batchId: string, month: number, year: number): Promise<void> {
     const scheduleId = `sched-${year}-${month}`;
     this.schedules = this.getSchedules().filter(
       (s) => !(s.id === scheduleId || (s.month === month && s.year === year))
@@ -665,7 +665,11 @@ class DataStore {
 
     this.notify();
 
-    deleteImportBatchFromSupabase(batchId, month, year).catch((e) => console.warn('Supabase delete import batch error:', e));
+    try {
+      await deleteImportBatchFromSupabase(batchId, month, year);
+    } catch (e) {
+      console.warn('Supabase delete import batch error:', e);
+    }
   }
 
   // --- SPECIAL SERVICES CRUD ---
@@ -1084,11 +1088,23 @@ class DataStore {
     const sched = this.getScheduleByMonthYear(month, year);
     const targetSchedId = sched ? sched.id : `sched-${year}-${month}`;
     const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
+    const weekends = getServiceWeekendsInMonth(month, year);
+    const weekendDates = new Set<string>();
+    const weekendIds = new Set<string>();
+    weekends.forEach((w) => {
+      weekendDates.add(w.saturday_date);
+      weekendDates.add(w.sunday_date);
+      weekendIds.add(w.id);
+      weekendIds.add(`wk-${w.saturday_date}`);
+      weekendIds.add(`wk-${w.sunday_date}`);
+    });
 
     return this.assignments.filter(
       (a) =>
         a.schedule_id === targetSchedId ||
         a.schedule_id === `sched-${year}-${month}` ||
+        (a.service_date && weekendDates.has(a.service_date)) ||
+        (a.weekend_id && weekendIds.has(a.weekend_id)) ||
         (a.weekend_id && a.weekend_id.startsWith(monthPrefix)) ||
         (a.service_date && a.service_date.startsWith(monthPrefix))
     );
