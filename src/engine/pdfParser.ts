@@ -338,28 +338,18 @@ function parseAssignmentsSpatial(
 
   // Calculate actual weekend dates in the given month & year
   const daysInMonth = new Date(year, month, 0).getDate();
-  const weekendDates: { sat: string; sun: string; satDay: number; sunDay: number }[] = [];
+  const sundaysInMonth: { day: number; iso: string }[] = [];
+  const saturdaysInMonth: { day: number; iso: string }[] = [];
 
-  // Locate all Sundays in month
   for (let d = 1; d <= daysInMonth; d++) {
-    const dateObj = new Date(year, month - 1, d);
-    if (dateObj.getDay() === 0) { // Sunday
-      const sunStr = formatDateISO(year, month, d);
-
-      // Saturday prior
-      const satObj = new Date(year, month - 1, d - 1);
-      const satStr = formatDateISO(satObj.getFullYear(), satObj.getMonth() + 1, satObj.getDate());
-
-      weekendDates.push({
-        sat: satStr,
-        sun: sunStr,
-        satDay: satObj.getDate(),
-        sunDay: d,
-      });
-    }
+    const dt = new Date(year, month - 1, d);
+    const dayOfWeek = dt.getDay();
+    const iso = formatDateISO(year, month, d);
+    if (dayOfWeek === 0) sundaysInMonth.push({ day: d, iso });
+    if (dayOfWeek === 6) saturdaysInMonth.push({ day: d, iso });
   }
 
-  if (weekendDates.length === 0) return [];
+  if (sundaysInMonth.length === 0) return [];
 
   // 1. Separate items in top schedule grid (above bottom composition section header)
   let gridItems = items;
@@ -368,12 +358,26 @@ function parseAssignmentsSpatial(
     gridItems = items.filter((i) => i.y < compHeaderItem.y);
   }
 
-  // 2. Collect all explicit Team X / Tim X cell matches in top grid
+  // 2. Identify English Service column X threshold
+  // English Service is always the rightmost column in the schedule grid
+  const englishColItems = gridItems.filter(
+    (i) => /english/i.test(i.str) || /sabtu/i.test(i.str)
+  );
+  let englishColMinX = 999999;
+  if (englishColItems.length > 0) {
+    englishColMinX = Math.min(...englishColItems.map((i) => i.x)) - 25;
+  } else {
+    const maxX = Math.max(...gridItems.map((i) => i.x));
+    englishColMinX = maxX * 0.85;
+  }
+
+  // 3. Collect all explicit Team X / Tim X cell matches in top grid
   interface MatchedCell {
     teamNum: number;
     detectedText: string;
     x: number;
     y: number;
+    isEnglish: boolean;
   }
 
   const matchedCells: MatchedCell[] = [];
@@ -387,101 +391,115 @@ function parseAssignmentsSpatial(
           detectedText: item.str.trim(),
           x: item.x,
           y: item.y,
+          isEnglish: item.x >= englishColMinX,
         });
       }
     }
   }
 
-  // 3. Cluster matched cells into Y-rows (row tolerance ~25px)
-  const rows: MatchedCell[][] = [];
-  matchedCells.forEach((cell) => {
-    let existingRow = rows.find((r) => Math.abs(r[0].y - cell.y) < 25);
+  if (matchedCells.length === 0) return [];
+
+  // Track team assignments per weekend to detect duplicates (key: weekend Sunday date)
+  const weekendTracker: { [weekendKey: string]: Set<number> } = {};
+
+  // 4. EXTRACT SUNDAY ASSIGNMENTS
+  const sundaySlots = DEFAULT_SLOT_MAPPINGS.filter((s) => s.day === 'SUNDAY');
+  const sundayCells = matchedCells.filter((c) => !c.isEnglish);
+
+  // Cluster Sunday cells into Y-rows (tolerance ~25px)
+  const sundayRows: MatchedCell[][] = [];
+  sundayCells.forEach((cell) => {
+    let existingRow = sundayRows.find((r) => Math.abs(r[0].y - cell.y) < 25);
     if (existingRow) {
       existingRow.push(cell);
     } else {
-      rows.push([cell]);
+      sundayRows.push([cell]);
     }
   });
 
-  // Sort rows by Y ascending (top to bottom)
-  rows.sort((a, b) => a[0].y - b[0].y);
+  // Sort rows top-to-bottom
+  sundayRows.sort((a, b) => a[0].y - b[0].y);
 
-  // Sort cells in each row by X ascending (left to right)
-  rows.forEach((r) => r.sort((a, b) => a.x - b.x));
+  // In each row, sort cells left-to-right
+  sundayRows.forEach((r) => r.sort((a, b) => a.x - b.x));
 
-  // Match rows to weekends
-  // If spatial rows matched weekendDates count, use spatial rows; otherwise fallback to linear match sequence
-  const spatialMap: Record<number, MatchedCell[]> = {};
-  rows.forEach((r, idx) => {
-    if (idx < weekendDates.length) {
-      spatialMap[idx] = r;
+  // Calculate approximate column centers from rows with 9 cells (if any) to gracefully map missing slots
+  const nineCellRows = sundayRows.filter((r) => r.length === 9);
+  const columnCenters: number[] = [];
+  if (nineCellRows.length > 0) {
+    for (let c = 0; c < 9; c++) {
+      const avgX = nineCellRows.reduce((sum, r) => sum + r[c].x, 0) / nineCellRows.length;
+      columnCenters.push(avgX);
     }
-  });
+  } else if (sundayCells.length > 0) {
+    const minX = Math.min(...sundayCells.map((c) => c.x));
+    const maxX = Math.max(...sundayCells.map((c) => c.x));
+    const step = (maxX - minX) / 8;
+    for (let c = 0; c < 9; c++) {
+      columnCenters.push(minX + c * step);
+    }
+  }
 
-  // Fallback sequential matches list if spatial row count differs
-  const linearMatches = Array.from(rawText.matchAll(/(?:Team|Tim)\s*(\d+)/gi));
-  let matchIndex = 0;
+  // Process Sunday rows
+  sundayRows.forEach((rowCells, rIdx) => {
+    // Determine Sunday date: check if row has day number text near the start
+    let serviceDate = sundaysInMonth[rIdx]?.iso;
+    const rowY = rowCells[0].y;
+    const dayItem = gridItems.find(
+      (i) => Math.abs(i.y - rowY) < 35 && i.x < (rowCells[0]?.x || 150) && /^\d{1,2}$/.test(i.str)
+    );
+    if (dayItem) {
+      const dNum = parseInt(dayItem.str, 10);
+      const matchedSun = sundaysInMonth.find((s) => s.day === dNum);
+      if (matchedSun) {
+        serviceDate = matchedSun.iso;
+      }
+    }
 
-  // Track team assignments per weekend to detect duplicates
-  const weekendTeamTracker: { [weekendIndex: number]: Set<number> } = {};
+    if (!serviceDate) {
+      const lastSun = sundaysInMonth[sundaysInMonth.length - 1];
+      serviceDate = lastSun?.iso || formatDateISO(year, month, 1);
+    }
 
-  weekendDates.forEach((w, wIdx) => {
-    weekendTeamTracker[wIdx] = new Set();
-    const rowCells = spatialMap[wIdx] || [];
+    const weekendKey = serviceDate;
+    if (!weekendTracker[weekendKey]) {
+      weekendTracker[weekendKey] = new Set();
+    }
 
-    DEFAULT_SLOT_MAPPINGS.forEach((slotMap, slotIdx) => {
-      let teamNum = 0; // 0 = UNRESOLVED
-      let detectedText = '';
+    // Map cells to the 9 Sunday slots
+    sundaySlots.forEach((slotMap, slotIdx) => {
+      let matchedCell: MatchedCell | undefined;
 
-      if (rowCells[slotIdx]) {
-        teamNum = rowCells[slotIdx].teamNum;
-        detectedText = rowCells[slotIdx].detectedText;
-      } else if (matchIndex < linearMatches.length) {
-        const foundStr = linearMatches[matchIndex][0];
-        const foundNum = parseInt(linearMatches[matchIndex][1], 10);
-        if (foundNum >= 1 && foundNum <= 20) {
-          teamNum = foundNum;
-          detectedText = foundStr;
-        }
-        matchIndex++;
+      if (rowCells.length === 9) {
+        matchedCell = rowCells[slotIdx];
+      } else if (columnCenters.length === 9) {
+        const targetX = columnCenters[slotIdx];
+        const closeCells = rowCells.filter((c) => Math.abs(c.x - targetX) < 45);
+        matchedCell = closeCells.sort((a, b) => Math.abs(a.x - targetX) - Math.abs(b.x - targetX))[0];
+      } else {
+        matchedCell = rowCells[slotIdx];
       }
 
-      const isSat = slotMap.location_id === 'english';
-      const serviceDate = isSat ? w.sat : w.sun;
-      const dayName = isSat ? 'Sabtu' : 'Minggu';
-
-      // Calendar Validation Check
-      const dateCheck = new Date(serviceDate);
-      const expectedDay = isSat ? 6 : 0; // 6 = Saturday, 0 = Sunday
-      const actualDay = dateCheck.getDay();
-
+      const teamNum = matchedCell ? matchedCell.teamNum : 0;
+      const detectedText = matchedCell ? matchedCell.detectedText : '';
       const warnings: string[] = [];
 
-      if (actualDay !== expectedDay) {
-        const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-        warnings.push(`PERINGATAN KALENDER: ${serviceDate} adalah hari ${dayNames[actualDay]}, bukan hari ${dayName}!`);
-      }
-
-      // Check if team number was resolved
       if (teamNum === 0) {
-        warnings.push('UNRESOLVED — Nomor Tim (Team X / Tim X) tidak terdeteksi dari PDF.');
+        warnings.push(`UNRESOLVED — Nomor Tim tidak terdeteksi untuk slot ${slotMap.slot_name} (${slotMap.location_name}).`);
       } else {
-        // Check duplicate assignment in same weekend
-        if (weekendTeamTracker[wIdx].has(teamNum)) {
+        if (weekendTracker[weekendKey].has(teamNum)) {
           warnings.push(`PERINGATAN DUPLIKASI: Team ${teamNum} ditugaskan lebih dari 1x dalam weekend yang sama.`);
         } else {
-          weekendTeamTracker[wIdx].add(teamNum);
+          weekendTracker[weekendKey].add(teamNum);
         }
       }
 
       const matchedTeam = teamNum > 0 ? existingTeams.find((t) => t.team_number === teamNum) : undefined;
       const teamId = matchedTeam ? matchedTeam.id : (teamNum > 0 ? `team-${teamNum}` : '');
 
-      // Check if already in database
       const isDuplicate = existingAssignments.some(
         (ea) => ea.service_date === serviceDate && ea.slot_id === slotMap.slot_id
       );
-
       if (isDuplicate) {
         warnings.push('Jadwal slot pada tanggal ini sudah ada di database.');
       }
@@ -489,7 +507,7 @@ function parseAssignmentsSpatial(
       result.push({
         id: `asgn-preview-${serviceDate}-${slotMap.slot_id}`,
         date: serviceDate,
-        day_name: dayName,
+        day_name: 'Minggu',
         team_number: teamNum,
         team_id: teamId,
         location_name: slotMap.location_name,
@@ -509,6 +527,116 @@ function parseAssignmentsSpatial(
         detected_text: detectedText || (teamNum > 0 ? `Team ${teamNum}` : 'Teks tidak terbaca'),
       });
     });
+  });
+
+  // 5. EXTRACT ENGLISH SERVICE ASSIGNMENTS (SATURDAY)
+  const englishSlot = DEFAULT_SLOT_MAPPINGS.find((s) => s.day === 'SATURDAY') || {
+    location_name: 'English Service',
+    location_id: 'english' as const,
+    slot_name: 'English Service',
+    slot_id: 'english-service',
+    day: 'SATURDAY' as const,
+  };
+
+  const englishCells = matchedCells.filter((c) => c.isEnglish);
+  englishCells.sort((a, b) => a.y - b.y);
+
+  // Detect explicit date labels in the English column (e.g. "Sabtu, 3 Okt", "Sabtu, 10 Okt")
+  const dateLabels = gridItems.filter(
+    (i) => i.x >= englishColMinX && /sabtu,?\s*(\d{1,2})/i.test(i.str)
+  );
+
+  englishCells.forEach((cell, idx) => {
+    let serviceDate = saturdaysInMonth[idx]?.iso;
+    let satDay = saturdaysInMonth[idx]?.day;
+
+    // Find nearest date label above the cell
+    const nearbyLabel = dateLabels
+      .filter((lbl) => lbl.y <= cell.y && (cell.y - lbl.y) < 55)
+      .sort((a, b) => b.y - a.y)[0];
+
+    if (nearbyLabel) {
+      const match = nearbyLabel.str.match(/sabtu,?\s*(\d{1,2})/i);
+      if (match) {
+        const d = parseInt(match[1], 10);
+        const matchedSat = saturdaysInMonth.find((s) => s.day === d);
+        if (matchedSat) {
+          serviceDate = matchedSat.iso;
+          satDay = matchedSat.day;
+        }
+      }
+    }
+
+    if (!serviceDate) {
+      serviceDate = formatDateISO(year, month, satDay || (idx + 1) * 7);
+    }
+
+    // Determine weekend key: Sunday following this Saturday for unified weekend duplication check
+    const satDateObj = new Date(serviceDate);
+    const sunDateObj = new Date(satDateObj.getFullYear(), satDateObj.getMonth(), satDateObj.getDate() + 1);
+    const weekendKey = formatDateISO(
+      sunDateObj.getFullYear(),
+      sunDateObj.getMonth() + 1,
+      sunDateObj.getDate()
+    );
+
+    if (!weekendTracker[weekendKey]) {
+      weekendTracker[weekendKey] = new Set();
+    }
+
+    const teamNum = cell.teamNum;
+    const detectedText = cell.detectedText;
+    const warnings: string[] = [];
+
+    if (teamNum === 0) {
+      warnings.push('UNRESOLVED — Nomor Tim English Service tidak terdeteksi.');
+    } else {
+      if (weekendTracker[weekendKey].has(teamNum)) {
+        warnings.push(`PERINGATAN DUPLIKASI: Team ${teamNum} ditugaskan lebih dari 1x dalam weekend yang sama.`);
+      } else {
+        weekendTracker[weekendKey].add(teamNum);
+      }
+    }
+
+    const matchedTeam = teamNum > 0 ? existingTeams.find((t) => t.team_number === teamNum) : undefined;
+    const teamId = matchedTeam ? matchedTeam.id : (teamNum > 0 ? `team-${teamNum}` : '');
+
+    const isDuplicate = existingAssignments.some(
+      (ea) => ea.service_date === serviceDate && ea.slot_id === englishSlot.slot_id
+    );
+    if (isDuplicate) {
+      warnings.push('Jadwal slot pada tanggal ini sudah ada di database.');
+    }
+
+    result.push({
+      id: `asgn-preview-${serviceDate}-${englishSlot.slot_id}`,
+      date: serviceDate,
+      day_name: 'Sabtu',
+      team_number: teamNum,
+      team_id: teamId,
+      location_name: englishSlot.location_name,
+      location_id: englishSlot.location_id,
+      slot_name: englishSlot.slot_name,
+      slot_id: englishSlot.slot_id,
+      service_type: 'REGULAR',
+      confidence: teamNum > 0 && warnings.length === 0 ? 'HIGH' : teamNum > 0 ? 'MEDIUM' : 'LOW',
+      leader_name: matchedTeam?.leader_name || (teamNum > 0 ? `Leader Team ${teamNum}` : 'UNRESOLVED — PLEASE REVIEW'),
+      warnings,
+      is_duplicate: isDuplicate,
+      source_file_id: sourceFileId,
+      source_filename: sourceFilename,
+      batch_id: batchId,
+      detected_month: month,
+      detected_year: year,
+      detected_text: detectedText || (teamNum > 0 ? `Team ${teamNum}` : 'Teks tidak terbaca'),
+    });
+  });
+
+  // Sort assignments chronologically by date, then slot_id
+  result.sort((a, b) => {
+    const dateCmp = a.date.localeCompare(b.date);
+    if (dateCmp !== 0) return dateCmp;
+    return a.slot_id.localeCompare(b.slot_id);
   });
 
   return result;
