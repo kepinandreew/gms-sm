@@ -1,12 +1,18 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
 
+const DEFAULT_SUPABASE_URL = 'https://offbywvstsbidxxbtozl.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mZmJ5d3ZzdHNiaWR4eGJ0b3psIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTM5OTUsImV4cCI6MjEwMTQ2OTk5NX0.fZ9RjI-9-WmaPV1E71DFGwTKTY0a6_gNxrYGBrKNZo4';
+
 const supabaseUrl = (
-  (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_SUPABASE_URL : process.env.VITE_SUPABASE_URL) || ''
+  (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_SUPABASE_URL : process.env.VITE_SUPABASE_URL) ||
+  DEFAULT_SUPABASE_URL
 ).trim();
 const supabaseAnonKey = (
   (typeof import.meta !== 'undefined' && import.meta.env
     ? import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
-    : process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY) || ''
+    : process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY) ||
+  DEFAULT_SUPABASE_ANON_KEY
 ).trim();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);

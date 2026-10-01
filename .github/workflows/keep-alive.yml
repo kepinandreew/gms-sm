@@ -17,13 +17,12 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mZmJ5d3ZzdHNiaWR4eGJ0b3psIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTM5OTUsImV4cCI6MjEwMTQ2OTk5NX0.fZ9RjI-9-WmaPV1E71DFGwTKTY0a6_gNxrYGBrKNZo4' }}
         run: |
           echo "1. Mengirim READ query ke Supabase..."
-          TIMESTAMP=$(date +%s)
           GET_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
             -H "Cache-Control: no-cache, no-store" \
             -H "Pragma: no-cache" \
-            "$SUPABASE_URL/rest/v1/teams?select=id&limit=1&_t=$TIMESTAMP")
+            "$SUPABASE_URL/rest/v1/teams?select=id&limit=1")
 
           echo "Status Read Query: $GET_STATUS"
 
@@ -39,9 +38,9 @@ jobs:
 
           echo "Status Write Heartbeat: $WRITE_STATUS"
 
-          if [ "$GET_STATUS" -ge 200 ] && [ "$GET_STATUS" -lt 300 ]; then
-            echo "✅ Ping berhasil! Database Supabase aktif dan ter-refresh."
+          if [ "$GET_STATUS" -ge 200 ] && [ "$GET_STATUS" -lt 300 ] && [ "$WRITE_STATUS" -ge 200 ] && [ "$WRITE_STATUS" -lt 300 ]; then
+            echo "✅ Ping & Heartbeat berhasil! Database Supabase aktif dan ter-refresh."
           else
-            echo "❌ Ping gagal. Database mungkin sedang paused di Supabase Dashboard (Status: $GET_STATUS)"
+            echo "❌ Ping / Heartbeat gagal (Read Status: $GET_STATUS, Write Status: $WRITE_STATUS)."
             exit 1
           fi
